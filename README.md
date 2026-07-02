@@ -1,130 +1,172 @@
-# Hermes GitHub App Plugin
+# Hermes GitHub App Plugin / ghapp
 
-Hermes plugin for using **per-agent GitHub App identities** instead of a human `gh`/SSH identity.
+Runtime-minted, **minimally scoped** GitHub tokens from a GitHub App: every
+token is bound to a **single repository** with an explicit **permission set**,
+expires within an hour, and is never written to disk. Ships as a Hermes agent
+plugin and as a standalone CLI (`ghapp`) usable in any dev environment.
 
-Each Hermes agent runs the same package but is configured with its own GitHub App:
+Two operating modes, selected by one environment variable:
+
+- **Local mode** (default): this process holds the App private key (file,
+  inline env, or a command like `op read ...` executed at mint time) and mints
+  directly. For interactive/dev environments.
+- **Broker mode** (`GHAPP_BROKER_SOCKET=/run/ghbroker/ghbroker.sock`): tokens
+  are requested from a host-side broker daemon over a unix socket. The client
+  process holds **no key material** — for containerized agent execution, where
+  the key must not be readable from the agent's shell. The broker enforces a
+  repository allowlist + permission ceiling and audits every decision.
+
+```
+agent container                      trusted host side
+┌────────────────────────┐          ┌─────────────────────────────┐
+│ git push (cred helper) │──UDS────▶│ ghapp serve                 │──▶ GitHub
+│ gh-app / ghapp token   │  socket  │  policy: repos ∩ perms      │   App API
+│ github_app_* tools     │          │  audit → journald           │
+│ (no key material)      │          │  key: 0600, own user        │
+└────────────────────────┘          └─────────────────────────────┘
+```
+
+## Configuration (local mode / broker host)
 
 ```yaml
 github_app:
-  client_id: "Iv1.exampleclientid"
-  installation_id: "987654"
-  private_key_path: "~/.hermes/secrets/agent-github-app.private-key.pem"
-  app_slug: "hermes-agent"
+  client_id: "Iv23exampleclientid"
+  app_slug: "igou-dev"
+  installations:            # one entry per account the app is installed on
+    david-igou: "143866260"
+    igou-io: "143866153"
+  private_key_cmd: op read op://claude/igou-dev-github-app/private_key
+  # or: private_key_path: ~/.config/ghapp/key.pem
+  default_permissions:      # used when a mint doesn't specify permissions
+    contents: write
+    pull_requests: write
+    issues: write
 ```
 
-Environment variables with the same meaning are also supported:
+Config lives in `~/.hermes/config.yaml` (or set `GHAPP_CONFIG=/path/to/file`).
+Environment variables override: `GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_INSTALLATIONS` (`owner=id[,owner=id]`), `GITHUB_APP_PRIVATE_KEY`,
+`GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_APP_PRIVATE_KEY_CMD`,
+`GITHUB_APP_SLUG`, `GITHUB_API_URL`.
 
-- `GITHUB_APP_CLIENT_ID`
-- `GITHUB_APP_INSTALLATION_ID`
-- `GITHUB_APP_PRIVATE_KEY_PATH`
-- `GITHUB_APP_PRIVATE_KEY` (PEM contents; useful for CI)
-
-Repository access is controlled by the GitHub App installation scope in GitHub. If an agent should not access a repository, remove that repository from the GitHub App installation scope.
-
-## Client ID vs. installation ID
-
-`client_id` identifies the GitHub App registration. GitHub recommends using the GitHub App **client ID** as the JWT `iss` claim when authenticating as an app.
-
-`installation_id` identifies one installation of that app on a specific user or organization account. It is required when exchanging the app JWT for an installation access token via `POST /app/installations/{installation_id}/access_tokens`.
-
-In other words: `client_id` answers "which GitHub App is signing this JWT?" while `installation_id` answers "which installed copy of that app should this token act as?" The same GitHub App can have multiple installation IDs if it is installed on multiple accounts.
+The owner half of `OWNER/REPO` selects the installation, so one app installed
+on several accounts needs no per-call installation plumbing. The legacy
+single `installation_id` key still works.
 
 ## Install
 
 ```bash
-pip install hermes-github-app-plugin
-hermes plugins enable github-app
-hermes-github-app setup
-hermes-github-app doctor --repo OWNER/REPO
+pip install "hermes-github-app-plugin @ git+https://github.com/david-igou/hermes_github_app_plugin@main"
+ghapp setup            # interactive; --non-interactive with flags for scripts
+ghapp doctor --repo OWNER/REPO
 ```
 
-`setup` walks through the required values one by one. Optional prompts are explicitly marked with `(optional)`:
+## Everyday use
 
-```text
-GitHub App client ID:
-GitHub App installation ID:
-GitHub App private key path:
-GitHub App slug (optional):
+### Plain git via the credential helper
+
+```ini
+# gitconfig
+[credential "https://github.com"]
+  helper = ghapp
+  useHttpPath = true
 ```
 
-For scripted installs, pass flags and skip the network verification until secrets are mounted:
+With that in place, `git clone/fetch/push` on HTTPS GitHub remotes just works:
+the helper receives the repo path, mints a `contents: write` token for exactly
+that repository, and hands it to git. Nothing is stored (`store`/`erase` are
+no-ops). SSH remotes bypass the App identity — don't use them for bot work.
+
+### gh and scripts
 
 ```bash
-hermes-github-app setup --non-interactive --skip-verify \
-  --client-id Iv1.exampleclientid \
-  --installation-id 987654 \
-  --private-key-path ~/.hermes/secrets/agent-github-app.private-key.pem \
-  --app-slug hermes-agent
+gh-app --repo OWNER/REPO -- pr list             # GH_TOKEN scoped to that repo
+gh-app --repo OWNER/REPO --permission contents=read -- run list
+git-app --repo OWNER/REPO -- push origin branch # askpass variant, no helper needed
+ghapp token --repo OWNER/REPO --permission contents=read [--json]
+ghapp api /repos/OWNER/REPO/issues --method POST --data '{"title": "..."}'
+ghapp status --repo OWNER/REPO
 ```
 
-`doctor` checks local installation state and, unless `--skip-network` is set, verifies that an installation token can be minted and the optional repository probe is reachable.
+`--repo` is required everywhere a token is minted: tokens are per-repository
+by design. Request only the permissions the operation needs; unspecified
+mints use `default_permissions` (or the broker's defaults in broker mode).
 
-## CLI and wrappers
+## The broker (containerized execution)
+
+On the trusted host, as a dedicated user that owns the key:
 
 ```bash
-hermes-github-app setup
-hermes-github-app doctor --repo OWNER/REPO
-hermes-github-app status
-hermes-github-app token --repo OWNER/REPO
-hermes-github-app api --repo OWNER/REPO /repos/OWNER/REPO
-
-gh-app --repo OWNER/REPO pr list -R OWNER/REPO
-git-app --repo OWNER/REPO push origin my-branch
+ghapp serve --socket /run/ghbroker/ghbroker.sock --policy /etc/ghbroker/policy.yaml
 ```
 
-`gh-app` injects an ephemeral installation token as `GH_TOKEN` and `GITHUB_TOKEN` for the child `gh` process.
-`git-app` injects a temporary askpass helper so HTTPS Git operations authenticate as the GitHub App installation token without writing credentials into the remote URL.
-
-## Migrating existing Hermes skills and jobs
-
-To keep agents from falling back to local human credentials, update existing GitHub-related Hermes skills, cron jobs, and subagent prompts with these rules:
-
-- Use `github_app_*` tools for GitHub API operations when possible.
-- Replace authenticated `gh ...` examples with `gh-app --repo OWNER/REPO -- ...`.
-- Replace `git push` examples with `git-app --repo OWNER/REPO -- push ...`, or another HTTPS credential-helper flow backed by a freshly minted installation token.
-- Do not use `gh auth status` as proof of write identity; it reports local `gh` credentials and may show a human account.
-- Avoid SSH remotes for bot-managed worktrees. SSH uses local SSH keys, not the GitHub App token.
-- Add a pre-write check with `github_app_verify_identity` or `hermes-github-app status --repo OWNER/REPO`.
-- Avoid `@me` assumptions because the GitHub App bot is not the human operator.
-- Require write summaries to include the returned `auth_mode`, `app_slug`, `installation_id`, repository, operation, and URL/path.
-
-## Releasing to PyPI
-
-The package is built with Hatchling and publishes through the `CD` GitHub Actions workflow using PyPI Trusted Publishing / OIDC. The workflow listens to all pushed tags but only builds and publishes when the tag matches:
-
-```text
-^[0-9]+\.[0-9]+\.[0-9]+$
+```yaml
+# /etc/ghbroker/policy.yaml — root-owned, immutable to the agent
+policy:
+  allowed_repos:            # OWNER/REPO, fnmatch globs allowed
+    - igou-io/igou-ansible
+    - igou-io/igou-inventory
+  max_permissions:
+    contents: write
+    pull_requests: write
+    issues: write
+  default_permissions:
+    contents: read
 ```
 
-The tag must also match `project.version` in `pyproject.toml`.
+Mount the socket into the agent container and set
+`GHAPP_BROKER_SOCKET=/run/ghbroker/ghbroker.sock`; every client above (and the
+Hermes tools) switches to broker mode automatically. Requests exceeding policy
+are **denied, not clamped**, and every decision is a structured JSON line on
+stdout (journald under systemd): decision, repo, requested vs granted
+permissions, peer pid/uid/gid, expiry.
 
-Before the first release, configure PyPI Trusted Publishing for this repository and workflow:
+API: `POST /token {"repo": "OWNER/REPO", "permissions": {...}}`,
+`GET /status`, `GET /healthz`.
 
-- PyPI project name: `hermes-github-app-plugin`
-- Owner/repository: this GitHub repository
-- Workflow name: `cd.yaml`
-- Environment name: `pypi`
-
-Release example:
-
-```bash
-git tag 0.1.2
-git push origin 0.1.2
-```
-
-Tags like `v0.1.0`, `0.1`, or `0.1.0rc1` will not publish.
+Layered enforcement, outermost first: GitHub installation repo allowlist →
+app permission ceiling → broker policy → per-token scope (single repo,
+minimal perms, ≤1 h TTL).
 
 ## Hermes tools
 
-The plugin registers these tools:
+The plugin registers `github_app_status`, `github_app_verify_identity`,
+`github_app_api`, `github_app_graphql`, `github_app_create_issue`,
+`github_app_comment_issue`, `github_app_create_pr`, `github_app_comment_pr`.
+All of them mint per-repo tokens through the active backend and return auth
+metadata (app slug, installation, scoped repositories/permissions, redacted
+token, expiry). Mutating tools use the minimal permission set for the
+operation (`issues: write` for issues, `pull_requests: write` for PRs, ...).
 
-- `github_app_status`
-- `github_app_verify_identity`
-- `github_app_api`
-- `github_app_graphql`
-- `github_app_create_issue`
-- `github_app_comment_issue`
-- `github_app_create_pr`
-- `github_app_comment_pr`
+```bash
+hermes plugins enable github-app
+```
 
-All mutating tools return auth metadata showing App mode, installation ID, app slug, and target repository.
+## Migrating agent skills and jobs
+
+- Prefer `github_app_*` tools for API operations.
+- `gh ...` → `gh-app --repo OWNER/REPO -- ...`.
+- `git push` → plain push over HTTPS with the credential helper, or
+  `git-app --repo OWNER/REPO -- push ...`.
+- No SSH remotes for bot-managed worktrees; no `gh auth status` as identity
+  proof; no `@me` (the actor is `<app-slug>[bot]`).
+- Write summaries should include `auth_mode`, `app_slug`, `installation_id`,
+  repository, operation, and the granted `scoped_permissions`.
+
+## Development
+
+```bash
+pip install -e '.[dev]'
+ruff format --check . && ruff check . && mypy && pytest
+```
+
+Design docs: [docs/design-minimal-runtime-tokens.md](docs/design-minimal-runtime-tokens.md),
+[docs/github-app-setup.md](docs/github-app-setup.md).
+
+## Lineage and licensing
+
+Started as a fork of `PickNikRobotics/hermes_github_app_plugin` and has since
+diverged permanently (down-scoped multi-installation minting, the broker, the
+credential helper). MIT licensed; original attribution retained in LICENSE.
+This package is **not** published to PyPI (that name belongs to upstream) —
+install from a git ref.

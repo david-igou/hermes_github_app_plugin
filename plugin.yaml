@@ -1,6 +1,6 @@
 name: github-app
-version: 0.1.0
-description: "GitHub App identity integration for Hermes: per-agent app token minting, GitHub API tools, gh/git wrappers, CLI, and workflow skill."
+version: 0.2.0
+description: "GitHub App identity for agents: runtime-minted repo-scoped tokens (local or via the host broker socket), GitHub API tools, gh/git wrappers, git credential helper, CLI, and workflow skill."
 author: Hermes GitHub App Plugin Contributors
 provides_tools:
   - github_app_status
@@ -12,16 +12,21 @@ provides_tools:
   - github_app_create_pr
   - github_app_comment_pr
 provides_cli:
+  - ghapp
   - hermes-github-app
   - gh-app
   - git-app
+  - git-credential-ghapp
 requires_env:
-  - name: GITHUB_APP_CLIENT_ID
-    description: "GitHub App client ID for this Hermes agent. Can also be set in ~/.hermes/config.yaml under github_app.client_id."
+  - name: GHAPP_BROKER_SOCKET
+    description: "Path to the ghapp broker unix socket. When set, tokens are requested from the host broker and no key material is needed in this process."
     secret: false
-  - name: GITHUB_APP_INSTALLATION_ID
-    description: "GitHub App installation ID for this Hermes agent. Can also be set in ~/.hermes/config.yaml under github_app.installation_id."
+  - name: GITHUB_APP_CLIENT_ID
+    description: "GitHub App client ID (local-mint mode). Can also be set in the config file under github_app.client_id."
+    secret: false
+  - name: GITHUB_APP_INSTALLATIONS
+    description: "Installations as owner=id[,owner=id] (local-mint mode). Can also be set under github_app.installations."
     secret: false
   - name: GITHUB_APP_PRIVATE_KEY_PATH
-    description: "Path to the GitHub App private key PEM. Can also be set in ~/.hermes/config.yaml under github_app.private_key_path."
+    description: "Path to the GitHub App private key PEM (local-mint mode). Alternatives: GITHUB_APP_PRIVATE_KEY (inline PEM) or GITHUB_APP_PRIVATE_KEY_CMD (command printing the PEM, e.g. an `op read`)."
     secret: true

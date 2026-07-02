@@ -38,8 +38,8 @@ GITHUB_APP_VERIFY_IDENTITY = _schema(
 GITHUB_APP_API = _schema(
     "github_app_api",
     (
-        "Call GitHub REST API using the configured GitHub App installation token. "
-        "Prefer this over bare gh."
+        "Call GitHub REST API using a repo-scoped GitHub App installation token. "
+        "Prefer this over bare gh. repo is inferred from /repos/OWNER/REPO paths."
     ),
     {
         "method": {"type": "string", "description": "HTTP method, default GET."},
@@ -55,12 +55,16 @@ GITHUB_APP_API = _schema(
 
 GITHUB_APP_GRAPHQL = _schema(
     "github_app_graphql",
-    "Call GitHub GraphQL using the configured GitHub App installation token.",
+    (
+        "Call GitHub GraphQL using a repo-scoped GitHub App installation token. "
+        "The token is minted for `repo` only, so the query must concern that repository."
+    ),
     {
         "query": {"type": "string", "description": "GraphQL query."},
         "variables": {"type": "object", "description": "GraphQL variables."},
+        "repo": _REPO,
     },
-    ["query"],
+    ["query", "repo"],
 )
 
 GITHUB_APP_CREATE_ISSUE = _schema(

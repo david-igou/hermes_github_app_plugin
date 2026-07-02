@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-github-app-plugin"
-version = "0.1.2"
-description = "Hermes plugin for per-agent GitHub App identity, gh/git wrappers, and GitHub App-aware tools."
+version = "0.2.0"
+description = "Runtime-minted, repo-scoped GitHub App tokens: credential helper, gh/git wrappers, unix-socket broker, and Hermes agent tools."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -29,8 +29,10 @@ dev = [
 github-app = "hermes_github_app_plugin"
 
 [project.scripts]
+ghapp = "hermes_github_app_plugin.cli:main"
 gh-app = "hermes_github_app_plugin.cli:gh_app_main"
 git-app = "hermes_github_app_plugin.cli:git_app_main"
+git-credential-ghapp = "hermes_github_app_plugin.cli:git_credential_main"
 hermes-github-app = "hermes_github_app_plugin.cli:main"
 
 [tool.hatch.build.targets.wheel]
