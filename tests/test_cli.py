@@ -56,14 +56,14 @@ def test_setup_accepts_private_key_cmd(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     result = cli.main(
-        _setup_args(private_key_cmd="op read op://claude/igou-dev-github-app/private_key")
+        _setup_args(private_key_cmd="op read op://lab_external_api_keys/igou-dev-github-app/private_key")
     )
 
     assert result == 0
     data = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
     assert (
         data["github_app"]["private_key_cmd"]
-        == "op read op://claude/igou-dev-github-app/private_key"
+        == "op read op://lab_external_api_keys/igou-dev-github-app/private_key"
     )
     assert "private_key_path" not in data["github_app"]
 

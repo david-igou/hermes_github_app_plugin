@@ -83,11 +83,11 @@ Two items, same field layout:
 
 | Item | Vault |
 |---|---|
-| `igou-dev-github-app` | `claude` |
+| `igou-dev-github-app` | `lab_external_api_keys` |
 | `igou-hermes-github-app` | `awx` (AAP delivers it to the Hermes VM) |
 
 Fields (as created — underscore labels, so `op read
-op://claude/igou-dev-github-app/private_key` works):
+op://lab_external_api_keys/igou-dev-github-app/private_key` works):
 
 ```text
 client_id                    Iv23…
