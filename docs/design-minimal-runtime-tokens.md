@@ -93,7 +93,7 @@ github_app:
   installations:
     david-igou: "11111111"
     igou-io: "22222222"
-  private_key_cmd: op read op://claude/igou-dev-github-app/private_key
+  private_key_cmd: op read op://lab_external_api_keys/igou-dev-github-app/private_key
 ```
 
 Key sources, in precedence order: `private_key` (inline env),
@@ -200,7 +200,7 @@ agent never sees the key because of the `ghbroker` user boundary.
 | Installed on | david-igou + igou-io | david-igou + igou-io |
 | Installation repos | broad (working repos) | narrow (Hermes-managed repos only) |
 | Permissions | contents, pull_requests, issues, workflows RW; actions read; (optional) secrets RW to fix the PAT 403 on Actions secrets | contents, pull_requests, issues RW |
-| Key storage | `op://claude/igou-dev-github-app` | `op://awx/igou-hermes-github-app` (AAP delivers to VM) |
+| Key storage | `op://lab_external_api_keys/igou-dev-github-app` | `op://awx/igou-hermes-github-app` (AAP delivers to VM) |
 
 1Password item fields (as created): `client_id`, `app_slug`, `private_key`,
 `installation_id_david-igou`, `installation_id_igou-io`.
@@ -338,7 +338,7 @@ denial visible in `journalctl SYSLOG_IDENTIFIER=ghbroker`, gateway
      migrate skills/prompts, drop the `GH_TOKEN` forward and gh/ssh mounts.
    - this devcontainer/host: adopt via `igou-devenv` (package in image,
      `envs/github-app-dev.env` with
-     `GHAPP_PRIVATE_KEY_CMD=op read op://claude/igou-dev-github-app/private_key`,
+     `GHAPP_PRIVATE_KEY_CMD=op read op://lab_external_api_keys/igou-dev-github-app/private_key`,
      gitconfig helper) — **not before the test phase concludes**.
    - expand the app installations from scratch repos to the real repo lists;
      revoke the static PATs last.

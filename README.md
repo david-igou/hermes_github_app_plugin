@@ -35,7 +35,7 @@ github_app:
   installations:            # one entry per account the app is installed on
     david-igou: "143866260"
     igou-io: "143866153"
-  private_key_cmd: op read op://claude/igou-dev-github-app/private_key
+  private_key_cmd: op read op://lab_external_api_keys/igou-dev-github-app/private_key
   # or: private_key_path: ~/.config/ghapp/key.pem
   default_permissions:      # used when a mint doesn't specify permissions
     contents: write
