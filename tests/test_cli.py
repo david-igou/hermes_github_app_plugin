@@ -56,7 +56,9 @@ def test_setup_accepts_private_key_cmd(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     result = cli.main(
-        _setup_args(private_key_cmd="op read op://lab_external_api_keys/igou-dev-github-app/private_key")
+        _setup_args(
+            private_key_cmd="op read op://lab_external_api_keys/igou-dev-github-app/private_key"
+        )
     )
 
     assert result == 0
