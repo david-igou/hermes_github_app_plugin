@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Hermes GitHub App Plugin Contributors" }]
 dependencies = [
   "httpx>=0.25",
-  "PyJWT[crypto]>=2.8",
+  "PyJWT[crypto]>=2.13.0",
   "PyYAML>=6.0",
 ]
 
