@@ -60,3 +60,4 @@ packages = ["hermes_github_app_plugin"]
 [tool.pytest.ini_options]
 addopts = "--cov=hermes_github_app_plugin --cov-report=term-missing"
 testpaths = ["tests"]
+pythonpath = ["."]
