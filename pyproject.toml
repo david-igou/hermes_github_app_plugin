@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "mypy>=1.8",
-  "pytest>=8.0",
+  "pytest>=9.1.1",
   "pytest-cov>=5.0",
   "ruff>=0.8",
   "types-PyYAML>=6.0",
@@ -60,3 +60,4 @@ packages = ["hermes_github_app_plugin"]
 [tool.pytest.ini_options]
 addopts = "--cov=hermes_github_app_plugin --cov-report=term-missing"
 testpaths = ["tests"]
+pythonpath = ["."]
