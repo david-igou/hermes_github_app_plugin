@@ -76,7 +76,7 @@ One Python package, three layers:
 
 The mint call gains a request body:
 
-```python
+```text
 POST /app/installations/{installation_id}/access_tokens
 {
   "repositories": ["igou-ansible"],
