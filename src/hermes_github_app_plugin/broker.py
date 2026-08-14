@@ -1,12 +1,19 @@
-"""ghapp broker: policy-enforcing token minting behind a unix socket.
+"""ghapp broker: policy-enforcing token minting behind a unix socket or TCP port.
 
 Runs on the trusted side of the boundary (e.g. as a dedicated system user on
-the Hermes VM). Holds the GitHub App private key; agent-controlled processes
-only ever see single-repo, permission-clamped installation tokens.
+the Hermes VM, or as its own pod in a Kubernetes namespace). Holds the GitHub
+App private key; agent-controlled processes only ever see single-repo,
+permission-clamped installation tokens.
 
 Design notes:
-- HTTP over a unix domain socket: no TCP listener, no firewall surface, and
-  possession of the socket (mount + group) is the client authorization.
+- Two transports, same HTTP surface. Unix socket (`--socket`): no TCP
+  listener, no firewall surface, and possession of the socket (mount + group)
+  is the client authorization. TCP (`--listen host:port`): for containerized
+  deployments where clients are other pods and a socket cannot cross the pod
+  boundary — there the client authorization is network reachability, so the
+  listener MUST be scoped by the platform (NetworkPolicy / not exposed off
+  the namespace). The policy engine below is the same either way and is the
+  actual blast-radius bound.
 - Requests exceeding policy are DENIED, not silently clamped — a clamped
   token would make agent failures confusing to debug.
 - Every decision is one structured JSON line on stdout; under systemd that
@@ -147,10 +154,31 @@ class _BrokerServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         path.chmod(socket_mode)
 
 
+class _TCPBrokerServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """Threaded TCP HTTP server carrying broker state (containerized mode)."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(
+        self,
+        listen_address: tuple[str, int],
+        handler: type[BaseHTTPRequestHandler],
+        *,
+        auth: GitHubAppAuth,
+        policy: Policy,
+        audit_stream: Any,
+    ) -> None:
+        self.auth = auth
+        self.policy = policy
+        self.audit_stream = audit_stream
+        super().__init__(listen_address, handler)
+
+
 class _Handler(BaseHTTPRequestHandler):
     """Routes: GET /healthz, GET /status, POST /token."""
 
-    server: _BrokerServer
+    server: _BrokerServer | _TCPBrokerServer
     protocol_version = "HTTP/1.1"
 
     # BaseHTTPRequestHandler logs to stderr per request; audit lines replace that.
@@ -158,9 +186,18 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
     def address_string(self) -> str:
+        # TCP connections have an (ip, port) client_address; unix sockets an
+        # empty string.
+        if isinstance(self.client_address, tuple) and self.client_address:
+            return str(self.client_address[0])
         return "uds"
 
-    def _peer(self) -> dict[str, int]:
+    def _peer(self) -> dict[str, Any]:
+        if isinstance(self.client_address, tuple) and self.client_address:
+            return {
+                "peer_addr": str(self.client_address[0]),
+                "peer_port": int(self.client_address[1]),
+            }
         try:
             pid, uid, gid = struct.unpack(
                 "3i",
@@ -264,33 +301,68 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def _audit_decision(self, decision: str, *, peer: dict[str, int], **fields: Any) -> None:
+    def _audit_decision(self, decision: str, *, peer: dict[str, Any], **fields: Any) -> None:
         _audit(self.server.audit_stream, event="token_request", decision=decision, **peer, **fields)
+
+
+_MAX_PORT = 65535
+
+
+def split_listen(listen: str) -> tuple[str, int]:
+    """Parse a HOST:PORT listen address."""
+    host, sep, port_raw = listen.rpartition(":")
+    if not sep or not host or not port_raw.isdigit():
+        raise ConfigurationError(f"invalid listen address {listen!r}; expected HOST:PORT")
+    port = int(port_raw)
+    if not 0 < port <= _MAX_PORT:
+        raise ConfigurationError(f"invalid listen port {port}")
+    return host, port
 
 
 def serve(
     *,
-    socket_path: str,
+    socket_path: str | None = None,
+    listen: str | None = None,
     policy_path: str,
     auth: GitHubAppAuth,
     socket_mode: int = 0o660,
     audit_stream: Any = None,
 ) -> None:
-    """Run the broker until interrupted. Blocks."""
+    """Run the broker until interrupted. Blocks.
+
+    Exactly one of socket_path (unix socket) or listen ("host:port" TCP) selects
+    the transport.
+    """
+    if bool(socket_path) == bool(listen):
+        raise ConfigurationError("exactly one of socket_path or listen must be given")
     stream = audit_stream if audit_stream is not None else sys.stdout
     policy = load_policy(Path(policy_path))
-    server = _BrokerServer(
-        socket_path,
-        _Handler,
-        auth=auth,
-        policy=policy,
-        socket_mode=socket_mode,
-        audit_stream=stream,
-    )
+    server: _BrokerServer | _TCPBrokerServer
+    if listen:
+        endpoint = listen
+        server = _TCPBrokerServer(
+            split_listen(listen),
+            _Handler,
+            auth=auth,
+            policy=policy,
+            audit_stream=stream,
+        )
+    else:
+        assert socket_path is not None
+        endpoint = socket_path
+        server = _BrokerServer(
+            socket_path,
+            _Handler,
+            auth=auth,
+            policy=policy,
+            socket_mode=socket_mode,
+            audit_stream=stream,
+        )
     _audit(
         stream,
         event="startup",
-        socket=socket_path,
+        endpoint=endpoint,
+        transport="tcp" if listen else "uds",
         policy=policy_path,
         allowed_repos=list(policy.allowed_repos),
         max_permissions=dict(policy.max_permissions),
@@ -302,8 +374,9 @@ def serve(
         pass
     finally:
         server.server_close()
-        Path(socket_path).unlink(missing_ok=True)
-        _audit(stream, event="shutdown", socket=socket_path)
+        if socket_path:
+            Path(socket_path).unlink(missing_ok=True)
+        _audit(stream, event="shutdown", endpoint=endpoint)
 
 
 def make_server_for_tests(
@@ -320,5 +393,22 @@ def make_server_for_tests(
         auth=auth,
         policy=policy,
         socket_mode=0o660,
+        audit_stream=audit_stream,
+    )
+
+
+def make_tcp_server_for_tests(
+    listen_address: tuple[str, int],
+    *,
+    auth: GitHubAppAuth,
+    policy: Policy,
+    audit_stream: Any,
+) -> _TCPBrokerServer:
+    """Build a TCP broker server without blocking (tests drive serve_forever)."""
+    return _TCPBrokerServer(
+        listen_address,
+        _Handler,
+        auth=auth,
+        policy=policy,
         audit_stream=audit_stream,
     )

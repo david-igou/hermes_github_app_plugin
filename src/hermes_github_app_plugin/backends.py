@@ -1,11 +1,12 @@
-"""Token backends: local in-process minting vs. the host-side broker socket.
+"""Token backends: local in-process minting vs. the ghapp broker.
 
 The client surface (credential helper, gh-app, CLI, Hermes tools) never talks
 to GitHub's app-auth endpoints directly — it asks a backend for a token. In
 local mode the backend holds the App private key and mints in-process (the
-devcontainer case). In broker mode the key lives with a separate daemon behind
-a unix socket and this process holds no key material at all (the Hermes
-terminal-container case).
+devcontainer case). In broker mode the key lives with a separate daemon and
+this process holds no key material at all — reached over a unix socket
+(GHAPP_BROKER_SOCKET, the same-host case) or plain HTTP (GHAPP_BROKER_URL,
+the Kubernetes case where the broker is its own pod).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from .auth import GitHubAppAuth, InstallationToken, split_repo
 from .config import ConfigurationError, load_config
 
 BROKER_SOCKET_ENV = "GHAPP_BROKER_SOCKET"
+BROKER_URL_ENV = "GHAPP_BROKER_URL"
 
 _BROKER_BASE_URL = "http://ghapp-broker"
 
@@ -76,21 +78,42 @@ class LocalBackend:
 
 
 class BrokerBackend:
-    """Request tokens from the ghapp broker over its unix socket."""
+    """Request tokens from the ghapp broker (unix socket or HTTP URL)."""
 
     mode = "broker"
 
-    def __init__(self, socket_path: str, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        socket_path: str | None = None,
+        client: httpx.Client | None = None,
+        *,
+        url: str | None = None,
+    ) -> None:
+        if bool(socket_path) == bool(url):
+            raise ConfigurationError("exactly one of socket_path or url must be given")
         self._socket_path = socket_path
-        self._client = client or httpx.Client(
-            transport=httpx.HTTPTransport(uds=socket_path),
-            base_url=_BROKER_BASE_URL,
-            timeout=30,
-        )
+        self._url = url
+        if client is None:
+            if url:
+                client = httpx.Client(base_url=url.rstrip("/"), timeout=30)
+            else:
+                assert socket_path is not None
+                client = httpx.Client(
+                    transport=httpx.HTTPTransport(uds=socket_path),
+                    base_url=_BROKER_BASE_URL,
+                    timeout=30,
+                )
+        self._client = client
 
     @property
-    def socket_path(self) -> str:
+    def socket_path(self) -> str | None:
         return self._socket_path
+
+    @property
+    def endpoint(self) -> str:
+        endpoint = self._socket_path or self._url
+        assert endpoint is not None
+        return endpoint
 
     def mint(
         self,
@@ -109,7 +132,7 @@ class BrokerBackend:
             response = self._client.post("/token", json=body)
         except httpx.TransportError as exc:
             raise ConfigurationError(
-                f"cannot reach the ghapp broker at {self._socket_path}: {exc}"
+                f"cannot reach the ghapp broker at {self.endpoint}: {exc}"
             ) from exc
         data = response.json()
         if response.status_code != httpx.codes.OK:
@@ -134,11 +157,15 @@ class BrokerBackend:
             response = self._client.get("/status")
         except httpx.TransportError as exc:
             raise ConfigurationError(
-                f"cannot reach the ghapp broker at {self._socket_path}: {exc}"
+                f"cannot reach the ghapp broker at {self.endpoint}: {exc}"
             ) from exc
         response.raise_for_status()
         info = dict(response.json())
-        info.update({"backend": self.mode, "broker_socket": self._socket_path})
+        info["backend"] = self.mode
+        if self._socket_path:
+            info["broker_socket"] = self._socket_path
+        else:
+            info["broker_url"] = self._url
         return info
 
 
@@ -151,8 +178,15 @@ class BrokerDeniedError(RuntimeError):
 
 
 def get_backend() -> LocalBackend | BrokerBackend:
-    """Select the backend: broker when GHAPP_BROKER_SOCKET is set, else local."""
+    """Select the backend.
+
+    GHAPP_BROKER_SOCKET wins (same-host broker), then GHAPP_BROKER_URL
+    (in-cluster broker service), else local in-process minting.
+    """
     socket_path = os.environ.get(BROKER_SOCKET_ENV, "")
     if socket_path:
         return BrokerBackend(socket_path)
+    url = os.environ.get(BROKER_URL_ENV, "")
+    if url:
+        return BrokerBackend(url=url)
     return LocalBackend()

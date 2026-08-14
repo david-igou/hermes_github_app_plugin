@@ -10,8 +10,9 @@ Two operating modes, selected by one environment variable:
 - **Local mode** (default): this process holds the App private key (file,
   inline env, or a command like `op read ...` executed at mint time) and mints
   directly. For interactive/dev environments.
-- **Broker mode** (`GHAPP_BROKER_SOCKET=/run/ghbroker/ghbroker.sock`): tokens
-  are requested from a host-side broker daemon over a unix socket. The client
+- **Broker mode** (`GHAPP_BROKER_SOCKET=/run/ghbroker/ghbroker.sock`, or
+  `GHAPP_BROKER_URL=http://ghbroker:8085` for an in-cluster broker pod): tokens
+  are requested from a broker daemon. The client
   process holds **no key material** — for containerized agent execution, where
   the key must not be readable from the agent's shell. The broker enforces a
   repository allowlist + permission ceiling and audits every decision.
@@ -116,7 +117,22 @@ policy:
 
 Mount the socket into the agent container and set
 `GHAPP_BROKER_SOCKET=/run/ghbroker/ghbroker.sock`; every client above (and the
-Hermes tools) switches to broker mode automatically. Requests exceeding policy
+Hermes tools) switches to broker mode automatically.
+
+Where clients are other **pods** and a socket cannot cross the boundary
+(Kubernetes), run the broker as its own pod with a TCP listener instead:
+
+```bash
+ghapp serve --listen 0.0.0.0:8085 --policy /etc/ghbroker/policy.yaml
+```
+
+and point clients at it with `GHAPP_BROKER_URL=http://<service>:8085`
+(`GHAPP_BROKER_SOCKET` wins if both are set). The TCP listener itself is
+unauthenticated — reachability IS the client authorization, exactly like
+socket possession in unix mode — so scope it with NetworkPolicy and never
+expose it outside the namespace. The policy engine and audit stream are
+identical in both modes; TCP audit lines carry the peer address instead of
+pid/uid/gid (no `SO_PEERCRED` on TCP). Requests exceeding policy
 are **denied, not clamped**, and every decision is a structured JSON line on
 stdout (journald under systemd): decision, repo, requested vs granted
 permissions, peer pid/uid/gid, expiry.
