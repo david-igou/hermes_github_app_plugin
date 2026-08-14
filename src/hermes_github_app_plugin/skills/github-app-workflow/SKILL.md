@@ -1,7 +1,7 @@
 ---
 name: github-app-workflow
 description: Use per-agent GitHub App identity with runtime-minted, repo-scoped tokens for GitHub operations.
-version: 0.2.0
+version: 0.3.0
 author: Hermes GitHub App Plugin Contributors
 ---
 
