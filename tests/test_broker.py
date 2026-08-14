@@ -16,6 +16,9 @@ from hermes_github_app_plugin.broker import (
     PolicyError,
     load_policy,
     make_server_for_tests,
+    make_tcp_server_for_tests,
+    serve,
+    split_listen,
 )
 from hermes_github_app_plugin.config import ConfigurationError
 from tests.conftest import make_config, make_token
@@ -218,3 +221,83 @@ def test_broker_status_exposes_policy_not_key(
     assert info["backend"] == "broker"
     assert info["policy"]["max_permissions"] == {"contents": "write", "issues": "read"}
     assert "private_key" not in json.dumps(info)
+
+
+@pytest.fixture()
+def tcp_broker() -> Iterator[tuple[BrokerBackend, _FakeAuth, io.StringIO]]:
+    auth = _FakeAuth()
+    audit = io.StringIO()
+    server = make_tcp_server_for_tests(
+        ("127.0.0.1", 0),  # ephemeral port
+        auth=auth,  # type: ignore[arg-type]
+        policy=POLICY,
+        audit_stream=audit,
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield BrokerBackend(url=f"http://127.0.0.1:{port}"), auth, audit
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_tcp_broker_grants_within_policy(
+    tcp_broker: tuple[BrokerBackend, _FakeAuth, io.StringIO],
+) -> None:
+    backend, auth, audit = tcp_broker
+
+    token = backend.mint("ExampleOrg/repo", {"contents": "write"})
+
+    assert token.token.startswith("ghs_")
+    assert auth.mint_calls == [("ExampleOrg/repo", {"contents": "write"})]
+    lines = [json.loads(line) for line in audit.getvalue().splitlines()]
+    granted = [line for line in lines if line.get("decision") == "granted"]
+    assert granted and granted[0]["repo"] == "ExampleOrg/repo"
+    # TCP has no SO_PEERCRED; the peer is audited by address instead.
+    assert granted[0]["peer_addr"] == "127.0.0.1"
+    assert "peer_uid" not in granted[0]
+
+
+def test_tcp_broker_denies_out_of_policy(
+    tcp_broker: tuple[BrokerBackend, _FakeAuth, io.StringIO],
+) -> None:
+    backend, auth, _ = tcp_broker
+
+    with pytest.raises(BrokerDeniedError, match="not in the broker policy") as excinfo:
+        backend.mint("exampleorg/forbidden", {"contents": "read"})
+
+    assert excinfo.value.status_code == 403
+    assert auth.mint_calls == []
+
+
+def test_tcp_broker_status_and_describe(
+    tcp_broker: tuple[BrokerBackend, _FakeAuth, io.StringIO],
+) -> None:
+    backend, _, _ = tcp_broker
+
+    info = backend.describe()
+
+    assert info["backend"] == "broker"
+    assert info["broker_url"].startswith("http://127.0.0.1:")
+    assert "broker_socket" not in info
+
+
+def test_split_listen_validates() -> None:
+    assert split_listen("0.0.0.0:8085") == ("0.0.0.0", 8085)
+    for bad in ("8085", "host:", ":8085", "host:notaport", "host:0", "host:70000"):
+        with pytest.raises(ConfigurationError, match="listen"):
+            split_listen(bad)
+
+
+def test_serve_requires_exactly_one_transport(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError, match="exactly one"):
+        serve(policy_path=str(tmp_path / "p.yaml"), auth=_FakeAuth())  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError, match="exactly one"):
+        serve(
+            socket_path=str(tmp_path / "s.sock"),
+            listen="127.0.0.1:0",
+            policy_path=str(tmp_path / "p.yaml"),
+            auth=_FakeAuth(),  # type: ignore[arg-type]
+        )

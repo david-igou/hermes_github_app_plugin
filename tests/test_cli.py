@@ -239,4 +239,22 @@ def test_serve_refuses_broker_recursion(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("GHAPP_BROKER_SOCKET", "/run/ghbroker/ghbroker.sock")
 
     with pytest.raises(ConfigurationError, match="refusing to serve"):
-        cli._serve("/tmp/x.sock", "/tmp/policy.yaml", "0660")
+        cli._serve("/tmp/x.sock", "/tmp/policy.yaml", "0660", None)
+
+
+def test_serve_refuses_broker_url_recursion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GHAPP_BROKER_SOCKET", raising=False)
+    monkeypatch.setenv("GHAPP_BROKER_URL", "http://ghbroker:8085")
+
+    with pytest.raises(ConfigurationError, match="refusing to serve"):
+        cli._serve(None, "/tmp/policy.yaml", "0660", "0.0.0.0:8085")
+
+
+def test_serve_requires_one_transport_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GHAPP_BROKER_SOCKET", raising=False)
+    monkeypatch.delenv("GHAPP_BROKER_URL", raising=False)
+
+    with pytest.raises(ConfigurationError, match="exactly one"):
+        cli._serve(None, "/tmp/policy.yaml", "0660", None)
+    with pytest.raises(ConfigurationError, match="exactly one"):
+        cli._serve("/tmp/x.sock", "/tmp/policy.yaml", "0660", "0.0.0.0:8085")

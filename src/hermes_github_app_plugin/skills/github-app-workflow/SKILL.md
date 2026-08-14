@@ -11,10 +11,10 @@ Use this skill for GitHub operations from Hermes agents that are configured with
 
 ## How tokens are minted here
 
-Check `GHAPP_BROKER_SOCKET`:
+Check `GHAPP_BROKER_SOCKET`, then `GHAPP_BROKER_URL`:
 
-- **Set (broker mode — the normal case in terminal sessions):** tokens come from the host broker over a unix socket. This process holds no key material. The broker enforces a repository allowlist and permission ceiling; out-of-policy requests are denied with an explanatory error, and every request is audited. If a mint is denied, the policy is the answer — do not look for another credential.
-- **Unset (local mode):** tokens are minted in-process from the configured App key.
+- **Either set (broker mode — the normal case in terminal sessions):** tokens come from the broker — over a unix socket (`GHAPP_BROKER_SOCKET`, same-host) or plain HTTP (`GHAPP_BROKER_URL`, e.g. a broker Service in the same Kubernetes namespace). This process holds no key material. The broker enforces a repository allowlist and permission ceiling; out-of-policy requests are denied with an explanatory error, and every request is audited. If a mint is denied, the policy is the answer — do not look for another credential.
+- **Both unset (local mode):** tokens are minted in-process from the configured App key.
 
 ## First-time setup (local mode only)
 

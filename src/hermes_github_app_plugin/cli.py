@@ -19,6 +19,7 @@ from .api import GitHubApi, repo_from_api_path
 from .auth import GitHubAppAuth, auth_metadata, requires_app_jwt, split_repo
 from .backends import (
     BROKER_SOCKET_ENV,
+    BROKER_URL_ENV,
     BrokerDeniedError,
     LocalBackend,
     get_backend,
@@ -80,10 +81,14 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     )
     api.add_argument("--data", help="JSON request body")
 
-    serve = subparsers.add_parser(
-        "serve", help="Run the token broker on a unix socket (trusted side only)"
+    serve = subparsers.add_parser("serve", help="Run the token broker (trusted side only)")
+    serve.add_argument("--socket", help="Unix socket path to listen on")
+    serve.add_argument(
+        "--listen",
+        help="TCP HOST:PORT to listen on instead of a unix socket (containerized "
+        "mode — scope reachability with NetworkPolicy, the listener itself is "
+        "unauthenticated)",
     )
-    serve.add_argument("--socket", required=True, help="Unix socket path to listen on")
     serve.add_argument("--policy", required=True, help="Path to policy.yaml")
     serve.add_argument(
         "--socket-mode", default="0660", help="Octal socket file mode (default 0660)"
@@ -305,6 +310,15 @@ def _setup(args: argparse.Namespace) -> int:
     return _doctor(args.repo, skip_network=False)
 
 
+def _broker_mode_checks(broker_socket: str, broker_url: str) -> list[tuple[str, bool, str]]:
+    if broker_socket:
+        return [
+            ("broker mode (unix socket)", True, broker_socket),
+            ("broker socket exists", Path(broker_socket).exists(), broker_socket),
+        ]
+    return [("broker mode (http)", True, broker_url)]
+
+
 def _doctor(repo: str | None, *, skip_network: bool) -> int:
     """Run local and optional network diagnostics."""
     checks: list[tuple[str, bool, str]] = []
@@ -314,10 +328,10 @@ def _doctor(repo: str | None, *, skip_network: bool) -> int:
         checks.append((f"{command} on PATH", found is not None, found or "not found"))
 
     broker_socket = os.environ.get(BROKER_SOCKET_ENV, "")
+    broker_url = os.environ.get(BROKER_URL_ENV, "")
     try:
-        if broker_socket:
-            checks.append(("broker mode", True, broker_socket))
-            checks.append(("broker socket exists", Path(broker_socket).exists(), broker_socket))
+        if broker_socket or broker_url:
+            checks.extend(_broker_mode_checks(broker_socket, broker_url))
             if not skip_network:
                 backend = get_backend()
                 info = backend.describe()
@@ -406,7 +420,7 @@ def _token(repo: str | None, *, permissions: dict[str, str] | None, json_output:
 
 def _api(method: str, path: str, *, repo: str | None, body: dict[str, Any] | None) -> int:
     if requires_app_jwt(path):
-        if os.environ.get(BROKER_SOCKET_ENV, ""):
+        if os.environ.get(BROKER_SOCKET_ENV, "") or os.environ.get(BROKER_URL_ENV, ""):
             raise ConfigurationError(
                 "GitHub App JWT endpoints (/app...) are not available in broker mode"
             )
@@ -425,18 +439,22 @@ def _api(method: str, path: str, *, repo: str | None, body: dict[str, Any] | Non
     return 0
 
 
-def _serve(socket_path: str, policy_path: str, socket_mode: str) -> int:
+def _serve(socket_path: str | None, policy_path: str, socket_mode: str, listen: str | None) -> int:
     try:
         mode = int(socket_mode, 8)
     except ValueError as exc:
         raise ConfigurationError(f"invalid --socket-mode {socket_mode!r}") from exc
-    if os.environ.get(BROKER_SOCKET_ENV, ""):
-        raise ConfigurationError(
-            f"refusing to serve with {BROKER_SOCKET_ENV} set — the broker must "
-            "mint locally, not recurse into another broker"
-        )
+    if bool(socket_path) == bool(listen):
+        raise ConfigurationError("exactly one of --socket or --listen is required")
+    for env_name in (BROKER_SOCKET_ENV, BROKER_URL_ENV):
+        if os.environ.get(env_name, ""):
+            raise ConfigurationError(
+                f"refusing to serve with {env_name} set — the broker must "
+                "mint locally, not recurse into another broker"
+            )
     broker_serve(
-        socket_path=socket_path,
+        socket_path=socket_path or None,
+        listen=listen or None,
         policy_path=policy_path,
         auth=GitHubAppAuth(load_config()),
         socket_mode=mode,
@@ -530,7 +548,7 @@ _COMMANDS: dict[str, Any] = {
     "api": lambda a: _api(
         a.method, a.path, repo=a.repo, body=json.loads(a.data) if a.data else None
     ),
-    "serve": lambda a: _serve(a.socket, a.policy, a.socket_mode),
+    "serve": lambda a: _serve(a.socket, a.policy, a.socket_mode, a.listen),
 }
 
 

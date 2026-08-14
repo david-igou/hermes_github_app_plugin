@@ -1,7 +1,7 @@
 """Hermes tool handlers for GitHub App operations.
 
 All handlers go through the token backend, so the gateway works identically
-whether it mints locally or via the host broker socket (GHAPP_BROKER_SOCKET).
+whether it mints locally or via the broker (GHAPP_BROKER_SOCKET / GHAPP_BROKER_URL).
 Every mint is scoped to the target repository with the minimal permission set
 for the operation.
 """
