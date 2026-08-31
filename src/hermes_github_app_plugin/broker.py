@@ -42,6 +42,10 @@ from .config import ConfigurationError
 
 _PERMISSION_LEVELS = {"read": 1, "write": 2, "admin": 3}
 
+# "none" is valid only in repo_max_permissions overrides: it removes a
+# globally-allowed permission for the matching repos entirely.
+_OVERRIDE_LEVELS = {"none": 0, **_PERMISSION_LEVELS}
+
 _MAX_BODY_BYTES = 64 * 1024
 
 
@@ -56,9 +60,27 @@ class Policy:
     allowed_repos: tuple[str, ...]
     max_permissions: dict[str, str]
     default_permissions: dict[str, str] = field(default_factory=dict)
+    # OWNER/REPO fnmatch glob -> per-permission caps. Tightening only: an
+    # override can lower or remove ("none") a globally-allowed permission for
+    # matching repos, never add one. All matching globs apply; lowest wins.
+    repo_max_permissions: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def repo_allowed(self, repo: str) -> bool:
         return any(fnmatch.fnmatchcase(repo.lower(), pattern) for pattern in self.allowed_repos)
+
+    def _effective_max(self, repo: str) -> dict[str, str]:
+        effective = dict(self.max_permissions)
+        lowered = repo.lower()
+        for pattern, overrides in self.repo_max_permissions.items():
+            if not fnmatch.fnmatchcase(lowered, pattern):
+                continue
+            for name, level in overrides.items():
+                current = effective.get(name)
+                if current is None:
+                    continue
+                if _OVERRIDE_LEVELS[level] < _OVERRIDE_LEVELS[current]:
+                    effective[name] = level
+        return effective
 
     def evaluate(
         self, repo: str, requested: dict[str, str] | None
@@ -66,12 +88,30 @@ class Policy:
         """Return (allowed, reason, effective_permissions)."""
         if not self.repo_allowed(repo):
             return False, f"repository {repo!r} is not in the broker policy", {}
+        effective_max = self._effective_max(repo)
         if not requested:
-            return True, "granted default permissions", dict(self.default_permissions)
+            # Defaults are clamped (not denied) to the per-repo ceiling so a
+            # plain read mint keeps working against capped repos.
+            granted: dict[str, str] = {}
+            for name, level in self.default_permissions.items():
+                cap = effective_max.get(name)
+                if cap is None or cap == "none":
+                    continue
+                if _PERMISSION_LEVELS.get(level, 99) > _PERMISSION_LEVELS[cap]:
+                    granted[name] = cap
+                else:
+                    granted[name] = level
+            return True, "granted default permissions", granted
         for name, level in requested.items():
-            max_level = self.max_permissions.get(name)
+            max_level = effective_max.get(name)
             if max_level is None:
                 return False, f"permission {name!r} is not allowed by the broker policy", {}
+            if max_level == "none":
+                return (
+                    False,
+                    f"permission {name!r} is not allowed for {repo} by the broker policy",
+                    {},
+                )
             if _PERMISSION_LEVELS.get(level, 99) > _PERMISSION_LEVELS.get(max_level, 0):
                 return (
                     False,
@@ -79,6 +119,24 @@ class Policy:
                     {},
                 )
         return True, "granted requested permissions", dict(requested)
+
+
+def _parse_repo_overrides(section: dict[str, Any]) -> dict[str, dict[str, str]]:
+    overrides_raw = section.get("repo_max_permissions", {})
+    if not isinstance(overrides_raw, dict):
+        raise PolicyError("policy.repo_max_permissions must be a mapping of OWNER/REPO globs")
+    repo_max_permissions: dict[str, dict[str, str]] = {}
+    for pattern, perms in overrides_raw.items():
+        if not isinstance(perms, dict) or not perms:
+            raise PolicyError(f"policy.repo_max_permissions.{pattern} must be a non-empty mapping")
+        entry = {str(k): str(v) for k, v in perms.items()}
+        for name, level in entry.items():
+            if level not in _OVERRIDE_LEVELS:
+                raise PolicyError(
+                    f"policy.repo_max_permissions.{pattern}.{name}: unknown level {level!r}"
+                )
+        repo_max_permissions[str(pattern).lower()] = entry
+    return repo_max_permissions
 
 
 def load_policy(path: Path) -> Policy:
@@ -107,10 +165,14 @@ def load_policy(path: Path) -> Policy:
     if not isinstance(defaults_raw, dict) or not defaults_raw:
         raise PolicyError("policy.default_permissions must be a non-empty mapping")
     default_permissions = {str(k): str(v) for k, v in defaults_raw.items()}
+
+    repo_max_permissions = _parse_repo_overrides(section)
+
     policy = Policy(
         allowed_repos=allowed_repos,
         max_permissions=max_permissions,
         default_permissions=default_permissions,
+        repo_max_permissions=repo_max_permissions,
     )
     # Defaults must themselves satisfy the ceiling — fail at load, not at mint.
     ok, reason, _ = policy.evaluate(allowed_repos[0].replace("*", "x"), default_permissions)

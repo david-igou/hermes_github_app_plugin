@@ -113,6 +113,11 @@ policy:
     issues: write
   default_permissions:
     contents: read
+  repo_max_permissions:       # optional per-repo caps (fnmatch globs)
+    igou-io/igou-inventory:   # tightening only — cannot add permissions;
+      contents: read          # requests above the cap are denied,
+    igou-io/igou-docs:        # default mints are clamped down to it.
+      contents: read          # level "none" removes the permission entirely.
 ```
 
 Mount the socket into the agent container and set
