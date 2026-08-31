@@ -1,0 +1,10 @@
+# ghapp token broker — `ghapp serve` behind a TCP listener for Kubernetes
+# (see README "The broker"). Matches the args the igou-openshift ghbroker
+# Deployments pass: --listen 0.0.0.0:8085 --policy /etc/ghbroker-policy/policy.yaml
+# with GHAPP_CONFIG pointing at the mounted config.
+FROM registry.access.redhat.com/ubi9/python-312:latest
+WORKDIR /opt/app-root/src
+COPY --chown=1001:0 . .
+RUN pip install --no-cache-dir .
+ENTRYPOINT ["ghapp", "serve"]
+CMD ["--listen", "0.0.0.0:8085", "--policy", "/etc/ghbroker-policy/policy.yaml"]

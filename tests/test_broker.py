@@ -65,6 +65,118 @@ def test_policy_defaults_when_no_permissions_requested() -> None:
     assert granted == {"contents": "read"}
 
 
+CAPPED_POLICY = Policy(
+    allowed_repos=("exampleorg/*",),
+    max_permissions={"contents": "write", "issues": "write"},
+    default_permissions={"contents": "read"},
+    repo_max_permissions={
+        "exampleorg/inventory": {"contents": "read"},
+        "exampleorg/secrets-*": {"contents": "none"},
+    },
+)
+
+
+def test_repo_override_caps_level() -> None:
+    allowed, reason, _ = CAPPED_POLICY.evaluate("exampleorg/inventory", {"contents": "write"})
+
+    assert not allowed
+    assert "exceeds the policy maximum (read)" in reason
+
+
+def test_repo_override_leaves_other_repos_alone() -> None:
+    allowed, _, granted = CAPPED_POLICY.evaluate("exampleorg/app", {"contents": "write"})
+
+    assert allowed
+    assert granted == {"contents": "write"}
+
+
+def test_repo_override_none_removes_permission() -> None:
+    allowed, reason, _ = CAPPED_POLICY.evaluate("exampleorg/secrets-repo", {"contents": "read"})
+
+    assert not allowed
+    assert "not allowed for exampleorg/secrets-repo" in reason
+
+
+def test_repo_override_does_not_touch_uncapped_permission() -> None:
+    allowed, _, granted = CAPPED_POLICY.evaluate("exampleorg/inventory", {"issues": "write"})
+
+    assert allowed
+    assert granted == {"issues": "write"}
+
+
+def test_repo_override_cannot_add_permission() -> None:
+    policy = Policy(
+        allowed_repos=("exampleorg/*",),
+        max_permissions={"contents": "read"},
+        default_permissions={"contents": "read"},
+        repo_max_permissions={"exampleorg/app": {"secrets": "write"}},
+    )
+
+    allowed, reason, _ = policy.evaluate("exampleorg/app", {"secrets": "read"})
+
+    assert not allowed
+    assert "'secrets' is not allowed" in reason
+
+
+def test_repo_override_clamps_defaults() -> None:
+    policy = Policy(
+        allowed_repos=("exampleorg/*",),
+        max_permissions={"contents": "write"},
+        default_permissions={"contents": "write"},
+        repo_max_permissions={
+            "exampleorg/inventory": {"contents": "read"},
+            "exampleorg/secrets-*": {"contents": "none"},
+        },
+    )
+
+    _, _, granted = policy.evaluate("exampleorg/inventory", None)
+    assert granted == {"contents": "read"}
+
+    _, _, granted = policy.evaluate("exampleorg/secrets-repo", None)
+    assert granted == {}
+
+    _, _, granted = policy.evaluate("exampleorg/app", None)
+    assert granted == {"contents": "write"}
+
+
+def test_load_policy_parses_repo_max_permissions(tmp_path: Path) -> None:
+    path = tmp_path / "policy.yaml"
+    path.write_text(
+        """
+policy:
+  allowed_repos: [exampleorg/*]
+  max_permissions: {contents: write}
+  default_permissions: {contents: read}
+  repo_max_permissions:
+    ExampleOrg/Inventory: {contents: read}
+""",
+        encoding="utf-8",
+    )
+
+    policy = load_policy(path)
+
+    assert policy.repo_max_permissions == {"exampleorg/inventory": {"contents": "read"}}
+    allowed, _, _ = policy.evaluate("exampleorg/inventory", {"contents": "write"})
+    assert not allowed
+
+
+def test_load_policy_rejects_bad_override_level(tmp_path: Path) -> None:
+    path = tmp_path / "policy.yaml"
+    path.write_text(
+        """
+policy:
+  allowed_repos: [exampleorg/*]
+  max_permissions: {contents: write}
+  repo_max_permissions:
+    exampleorg/app: {contents: sometimes}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PolicyError, match="unknown level"):
+        load_policy(path)
+
+
 def test_load_policy_validates(tmp_path: Path) -> None:
     path = tmp_path / "policy.yaml"
 
