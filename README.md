@@ -181,8 +181,8 @@ pip install -e '.[dev]'
 ruff format --check . && ruff check . && mypy && pytest
 ```
 
-Design docs: [docs/design-minimal-runtime-tokens.md](docs/design-minimal-runtime-tokens.md),
-[docs/github-app-setup.md](docs/github-app-setup.md).
+Design docs: [igou-docs/wiki/ghapp Broker and Policy Engine.md](https://github.com/igou-io/igou-docs/blob/main/wiki/ghapp%20Broker%20and%20Policy%20Engine.md),
+[igou-docs/security/GitHub App Setup and Credential Rotation.md](https://github.com/igou-io/igou-docs/blob/main/security/GitHub%20App%20Setup%20and%20Credential%20Rotation.md).
 
 ## Lineage and licensing
 
