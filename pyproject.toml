@@ -22,7 +22,7 @@ dev = [
   "pytest>=9.2.0",
   "pytest-cov>=7.1.0",
   "ruff>=0.17.4",
-  "types-PyYAML>=6.0.12.20261030",
+  "types-PyYAML>=6.0.12.20261103",
 ]
 
 [project.entry-points."hermes_agent.plugins"]
